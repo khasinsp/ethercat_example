@@ -15,9 +15,29 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include "../include/ns.h"
 
 #define ATI_VENDOR_ID    0x00000732
 #define ATI_PRODUCT_CODE 0x26483052 // CHECK AGAIN 0X26483052
+
+ssize_t hist_size = 1000;
+ssize_t hist_loop_size = 2000;
+
+unsigned long long hist[1000] = {0};
+unsigned long long hist_loop[2000] = {0};
+
+// char *time_stamp(){
+
+//     char *timestamp = (char *)malloc(sizeof(char) * 16);
+//     time_t ltime;
+//     ltime=time(NULL);
+//     struct tm *tm;
+//     tm=localtime(&ltime);
+    
+//     sprintf(timestamp,"%02d.%02d.%04d %02d:%02d:%02d", 
+//         tm->tm_mday, tm->tm_mon, tm->tm_year+1900, tm->tm_hour, tm->tm_min, tm->tm_sec);
+//     return timestamp;
+// }
 
 
 // Für gettid: Falls nicht im Header definiert, als Wrapper verwenden.
@@ -104,6 +124,17 @@ void set_realtime_deadline(unsigned long runtime, unsigned long deadline, unsign
     {
         perror("Failed to set SCHED_DEADLINE");
         exit(EXIT_FAILURE);
+    }
+}
+
+void add_to_hist(unsigned long long* hist, size_t hist_size, uint64_t t, double res) {
+    int idx = (int)(t / res);
+    if (idx >= 0 && idx < hist_size) {
+        hist[idx]++;
+    }
+    else {
+        // printf("Time outside Histogram size\nHistogram size: %ld\n%s,%ld\n", hist_size, time_stamp(), t);
+        printf("Time outside Histogram size\nHistogram size: %ld\ntime: %ld\n", hist_size, t);
     }
 }
 
@@ -197,8 +228,6 @@ void *main_loop() {
         return NULL;
     }
 
-    // struct timespec start, end;
-
     unsigned long runtime =     1000 * 1000;
     unsigned long deadline =    1000 * 1000;
     unsigned long period =      1000 * 1000;
@@ -206,9 +235,20 @@ void *main_loop() {
     setup_signal_handler();
     set_realtime_deadline(runtime, deadline, period);
 
+    uint64_t start = ns();
+    uint64_t start_before;
+    uint64_t end;
     // Zyklus: alle 100 ms Messwerte abrufen und ausgeben
     while (1) {
+
+        // struct timespec start, end;
+
         // clock_gettime(CLOCK_MONOTONIC, &start);
+
+        start_before = start;
+        start = ns();
+        double loop_time1 = (start - start_before) / 1000.0;
+        add_to_hist(hist_loop, hist_loop_size, loop_time1, 1);
 
         // Prozessdaten-Austausch
         ecrt_master_receive(master);
@@ -233,20 +273,25 @@ void *main_loop() {
         // double tz = tz_raw / 1000000.0;
         
         // Ausgabe der Werte
-        printf("F/T raw: Fx=%d, Fy=%d, Fz=%d, Tx=%d, Ty=%d, Tz=%d\n",
-            fx_raw, fy_raw, fz_raw, tx_raw, ty_raw, tz_raw);
+        // printf("F/T raw: Fx=%d, Fy=%d, Fz=%d, Tx=%d, Ty=%d, Tz=%d\n",
+        //     fx_raw, fy_raw, fz_raw, tx_raw, ty_raw, tz_raw);
         // printf("F/T (SI): Fx=%.3f N, Fy=%.3f N, Fz=%.3f N, Tx=%.3f Nm, Ty=%.3f Nm, Tz=%.3f Nm\n",
         //        fx, fy, fz, tx, ty, tz);
         
         ecrt_domain_queue(domain1);
         ecrt_master_send(master);
-        
-        sched_yield();
 
         // clock_gettime(CLOCK_MONOTONIC, &end);
 
-        // uint64_t loop_time = 1000000000 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec);
-        // printf("Loop time: %d\n\n", loop_time);
+        end = ns();
+
+        // double loop_time = 1.0e9 * (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1000.0;
+        double loop_time2 = (end - start) / 1000.0;
+        add_to_hist(hist, hist_size, loop_time2, 1);
+
+        sched_yield();
+        
+        
     }
 }
 
@@ -283,6 +328,40 @@ void *lb_send() {
     return NULL;
 }
 
+// Struktur, um Argumente für den CSV-Thread zu bündeln
+typedef struct {
+    FILE* csv;
+    unsigned long long* hist;
+    size_t hist_size;
+} HistToCSVArgs;
+
+// Thread-Funktion, die in regelmäßigen Abständen den Histogramm-Inhalt in die CSV-Datei schreibt
+void* hist_to_csv(void* arg) {
+    HistToCSVArgs* args = (HistToCSVArgs*) arg;
+    FILE* csv = args->csv;
+    unsigned long long* hist = args->hist;
+    size_t hist_size = args->hist_size;
+
+    set_CPU(1);
+    set_realtime_priority(99);
+
+    while (1) {
+        // Schreibe alle Histogrammwerte in eine Zeile (CSV-Format)
+        for (size_t i = 0; i < hist_size; i++) {
+            fprintf(csv, "%llu", hist[i]);
+            if (i < hist_size - 1) {
+                fprintf(csv, ",");
+            }
+        }
+        fprintf(csv, "\n");
+        fflush(csv);
+
+        // 300 Sekunden warten
+        sleep(300);
+    }
+    return NULL;
+}
+
 int main() {
     pthread_t ec_thread, lb_thread;
     int ret;
@@ -299,8 +378,41 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
+    const char* filename1 = "/home/urc/ethercat_example/analysis/04_04_1/hist.csv";
+    FILE* hist_csv = fopen(filename1, "w");
+
+    pthread_t hist_thread1;
+    HistToCSVArgs args1;
+    args1.csv = hist_csv;
+    args1.hist = hist;
+    args1.hist_size = hist_size;
+    if (pthread_create(&hist_thread1, NULL, hist_to_csv, &args1) != 0) {
+        fprintf(stderr, "Error creating thread\n");
+        fclose(hist_csv);
+        return EXIT_FAILURE;
+    }
+
+    const char* filename2 = "/home/urc/ethercat_example/analysis/04_04_1/hist_loop.csv";
+    FILE* hist_loop_csv = fopen(filename2, "w");
+
+    pthread_t hist_thread2;
+    HistToCSVArgs args2;
+    args2.csv = hist_loop_csv;
+    args2.hist = hist_loop;
+    args2.hist_size = hist_loop_size;
+    if (pthread_create(&hist_thread2, NULL, hist_to_csv, &args2) != 0) {
+        fprintf(stderr, "Error creating thread\n");
+        fclose(hist_loop_csv);
+        return EXIT_FAILURE;
+    }
+
     pthread_join(ec_thread, NULL);
     pthread_join(lb_thread, NULL);
+    pthread_join(hist_thread1, NULL);
+    pthread_join(hist_thread2, NULL);
+
+    fclose(hist_csv);
+    fclose(hist_loop_csv);
 
     return 0;
 }
