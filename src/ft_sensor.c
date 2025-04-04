@@ -206,6 +206,9 @@ void *main_loop() {
         {0, 0, ATI_VENDOR_ID, ATI_PRODUCT_CODE, 0x6000, 0x01, &off_fx},
         {0, 0, ATI_VENDOR_ID, ATI_PRODUCT_CODE, 0x6000, 0x02, &off_fy},
         {0, 0, ATI_VENDOR_ID, ATI_PRODUCT_CODE, 0x6000, 0x03, &off_fz},
+    uint64_t start = ns();
+    uint64_t start_before;
+    uint64_t end;
         {0, 0, ATI_VENDOR_ID, ATI_PRODUCT_CODE, 0x6000, 0x04, &off_tx},
         {0, 0, ATI_VENDOR_ID, ATI_PRODUCT_CODE, 0x6000, 0x05, &off_ty},
         {0, 0, ATI_VENDOR_ID, ATI_PRODUCT_CODE, 0x6000, 0x06, &off_tz},
