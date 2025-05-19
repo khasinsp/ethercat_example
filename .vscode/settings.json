@@ -61,5 +61,6 @@
         "signal.h": "c",
         "siginfo.h": "c",
         "time.h": "c"
-    }
+    },
+    "ros.distro": "noetic"
 }
